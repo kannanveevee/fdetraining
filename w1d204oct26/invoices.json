@@ -1,0 +1,38 @@
+[
+    {
+        "invoice_id": "INV-101",
+        "vendor": "ABC Ltd",
+        "amount": 85000,
+        "status": "PENDING"
+    },
+    {
+        "invoice_id": "INV-102",
+        "vendor": "XYZ Corp",
+        "amount": 142500,
+        "status": "PENDING"
+    },
+    {
+        "invoice_id": "INV-103",
+        "vendor": "ABN Ltd",
+        "amount": 85000,
+        "status": "PAID"
+    },
+    {
+        "invoice_id": "INV-104",
+        "vendor": "ABB Ltd",
+        "amount": 85000,
+        "status": "IN-PROGRESS"
+    },
+    {
+        "invoice_id": "INV-105",
+        "vendor": "BBC Ltd",
+        "amount": 85000,
+        "status": "REJECTED"
+    },
+    {
+        "invoice_id": "INV-106",
+        "vendor": "NN Ltd",
+        "amount": 185000,
+        "status": "PAID"
+    }
+]
