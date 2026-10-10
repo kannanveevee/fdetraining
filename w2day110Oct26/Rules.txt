@@ -1,0 +1,18 @@
+Rules
+
+1) Vendor names differ only by case or trailing spaces. They are the same vendor.
+2) A negative invoice cancels an earlier positive one for the same vendor with the same absolute amount. It is a credit note.
+3) Two rows are exact duplicates if every field matches.
+4) Two rows are suspected duplicates if the vendor, amount and date match but the invoice_id differs.
+
+Tasks (each builds on the previous result)
+
+1) Normalize. Clean the vendor (strip, title-case) and the status (upper-case). Do it in place using the index. Report any row where amount is None, with its index, and exclude it from the later totals.
+2) Exact duplicates. Build an exact_dupes dict that maps each duplicated key to a list of its indexes. Keep the first row of each group and remove the rest. Don't remove rows while looping forward, because that skips items.
+3) Suspected duplicates. Find rows that match on vendor, amount and date but have different IDs. Print them as pairs, (INV-107 ~ INV-101), and don't remove them.
+4) Credit notes. Match each negative invoice to its positive partner. Mark both as "CANCELLED" and exclude them from totals. Print the index pair, for example 3 <-> 6. Handle a credit note with no partner.
+5) Reconcile payments. Join payments to invoices by invoice_id. Sum the payments for each invoice. Then print:
+
+Build API for payments - GET, POST, DELETE, UPDATE
+
+Note: Handle errors 
