@@ -1,8 +1,17 @@
+"""Prints the invoice clean-up report (tasks 1-5 from Rules.txt).
+
+Each task builds on the result of the previous one, so the order matters:
+normalize -> remove exact duplicates -> suspected duplicates -> credit notes -> payments.
+
+Run:  python report.py
+"""
+
 import repository
 import services
 
 
 def main():
+    # ---- Load the data file; stop with a clear message if it cannot be read ----
     try:
         data = repository.load_data()
     except (OSError, ValueError) as e:
@@ -12,6 +21,7 @@ def main():
     rows = data.get("invoices", [])
     payments = data.get("payments", [])
 
+    # ---- Task 1: clean vendor/status, list rows with no amount ----
     print("Task 1 - normalize")
     missing = services.normalize(rows)
     if missing:
@@ -20,6 +30,7 @@ def main():
     else:
         print("  no rows with a missing amount")
 
+    # ---- Task 2: remove exact duplicates (the list shrinks, so we remember the original indexes) ----
     print("Task 2 - exact duplicates")
     exact_dupes, kept = services.remove_exact_duplicates(rows)
     for key, idxs in exact_dupes.items():
@@ -28,6 +39,7 @@ def main():
         print("  none")
     print(f"  rows left: {len(rows)} (original indexes kept: {kept})")
 
+    # ---- Task 3: suspected duplicates (reported only, never removed) ----
     print("Task 3 - suspected duplicates")
     pairs = services.find_suspected_duplicates(rows)
     for later, earlier in pairs:
@@ -35,6 +47,8 @@ def main():
     if not pairs:
         print("  none")
 
+    # ---- Task 4: match credit notes with the invoices they cancel ----
+    # `kept[i]` converts a current row index back to its original row number.
     print("Task 4 - credit notes")
     matched, unmatched = services.match_credit_notes(rows)
     for credit, positive in matched:
@@ -46,6 +60,7 @@ def main():
     if not matched and not unmatched:
         print("  none")
 
+    # ---- Task 5: billed vs paid per invoice ----
     print("Task 5 - payments per invoice")
     report, orphans = services.reconcile(rows, payments)
     for r in report:
