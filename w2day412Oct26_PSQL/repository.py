@@ -71,6 +71,41 @@ def get_encounter(conn: psycopg.Connection, encounter_id: int) -> Row | None:
     return conn.execute(query, (encounter_id,)).fetchone()
 
 
+def insert_encounter(conn: psycopg.Connection, encounter: Mapping[str, object]) -> Row:
+    """Insert one new encounter and return it. The new encounter_id is MAX + 1.
+
+    diabetic_patient.encounter_id has no default value, so the id is worked out here.
+    The lock makes a second insert wait until this transaction ends, so two requests
+    cannot pick the same id. Reads are not blocked.
+    """
+    conn.execute("LOCK TABLE diabetic_patient IN SHARE ROW EXCLUSIVE MODE")
+
+    columns = (
+        "patient_nbr",
+        "age",
+        "time_in_hospital",
+        "number_inpatient",
+        "number_emergency",
+        "number_outpatient",
+        "num_medications",
+        "num_lab_procedures",
+        "discharge_disposition_id",
+        "admission_type_id",
+    )
+    column_sql = ", ".join(columns)
+    placeholders = ", ".join("%s" for _ in columns)
+    query = f"""
+        INSERT INTO diabetic_patient AS p (encounter_id, {column_sql})
+        VALUES (
+            (SELECT COALESCE(MAX(encounter_id), 0) + 1 FROM diabetic_patient),
+            {placeholders}
+        )
+        RETURNING {ENCOUNTER_COLUMNS}
+    """
+    values = tuple(encounter.get(column) for column in columns)
+    return conn.execute(query, values).fetchone()
+
+
 def get_care_queue(conn: psycopg.Connection) -> list[Row]:
     """Return ALL encounters plus their latest intervention info.
 
@@ -85,6 +120,28 @@ def get_care_queue(conn: psycopg.Connection) -> list[Row]:
         ORDER BY p.encounter_id
     """
     return list(conn.execute(query).fetchall())
+
+
+def search_encounters(
+    conn: psycopg.Connection, patient_nbr: int | None = None
+) -> list[Row]:
+    """Return encounters plus their latest intervention, optionally for one patient only.
+
+    The risk filters happen later in service.py, because the risk score is
+    calculated in Python, not stored in the database.
+    """
+    if patient_nbr is None:
+        return get_care_queue(conn)
+
+    query = f"""
+        SELECT {ENCOUNTER_COLUMNS},
+               li.intervention_status, li.assigned_to, li.notes
+        FROM diabetic_patient p
+        {LATEST_INTERVENTION}
+        WHERE p.patient_nbr = %s
+        ORDER BY p.encounter_id
+    """
+    return list(conn.execute(query, (patient_nbr,)).fetchall())
 
 
 # ---------- Interventions ----------
@@ -106,18 +163,46 @@ def get_latest_intervention(
     ).fetchone()
 
 
+def get_intervention_history(
+    conn: psycopg.Connection, encounter_id: int
+) -> list[Row]:
+    """Return every intervention of an encounter, newest first (empty list if none)."""
+    return list(
+        conn.execute(
+            """
+            SELECT intervention_id, encounter_id, status, assigned_to, notes,
+                   created_at, updated_at
+            FROM care_interventions
+            WHERE encounter_id = %s
+            ORDER BY intervention_id DESC
+            """,
+            (encounter_id,),
+        ).fetchall()
+    )
+
+
+def encounter_exists(conn: psycopg.Connection, encounter_id: int) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM diabetic_patient WHERE encounter_id = %s", (encounter_id,)
+    ).fetchone()
+    return row is not None
+
+
 def update_intervention(
     conn: psycopg.Connection,
     encounter_id: int,
     changes: Mapping[str, object],
 ) -> Row | None:
-    """Create the encounter's intervention, or update it if one already exists.
+    """Record an intervention update as a NEW care_interventions row (keeps the history).
 
     `changes` only contains the fields the caller sent (status, assigned_to, notes).
+    Fields that were not sent are copied from the latest intervention, so the new
+    row is the full current state. The newest row (highest intervention_id) is the
+    one every other query treats as "latest".
     Returns the saved intervention, or None if the encounter does not exist.
     """
     # Step 1: make sure the encounter exists. FOR UPDATE locks that row until the
-    # transaction ends, so two requests cannot create duplicate interventions at once.
+    # transaction ends, so two updates of the same encounter run one after the other.
     exists = conn.execute(
         "SELECT encounter_id FROM diabetic_patient WHERE encounter_id = %s FOR UPDATE",
         (encounter_id,),
@@ -125,46 +210,34 @@ def update_intervention(
     if exists is None:
         return None
 
-    # Step 2: no intervention yet -> create one (status defaults to "open").
+    # Step 2: start from the latest intervention, or from a new "open" one.
     current = get_latest_intervention(conn, encounter_id)
-    if current is None:
-        inserted = conn.execute(
-            """
-            INSERT INTO care_interventions (encounter_id, status, assigned_to, notes)
-            VALUES (%s, %s, %s, %s)
-            RETURNING intervention_id, encounter_id, status, assigned_to, notes,
-                      created_at, updated_at
-            """,
-            (
-                encounter_id,
-                changes.get("status", "open"),
-                changes.get("assigned_to"),
-                changes.get("notes"),
-            ),
-        )
-        return inserted.fetchone()
+    new_values = {
+        "status": current["status"] if current else "open",
+        "assigned_to": current["assigned_to"] if current else None,
+        "notes": current["notes"] if current else None,
+    }
 
-    # Step 3: an intervention exists -> update only the fields that were sent.
-    # Column names cannot be %s parameters, so they are pasted into the SQL text.
-    # That is safe because only names from this fixed list are ever used.
-    allowed_columns = {"status", "assigned_to", "notes"}
-    fields = [field for field in changes if field in allowed_columns]
-    if not fields:
-        return current  # nothing to change
+    # Step 3: apply the fields that were sent, and insert the result as a new row.
+    for field in new_values:
+        if field in changes:
+            new_values[field] = changes[field]
 
-    assignments = ", ".join(f"{field} = %s" for field in fields)   # "status = %s, notes = %s"
-    values: Sequence[object] = tuple(changes[field] for field in fields)
-    updated = conn.execute(
-        f"""
-        UPDATE care_interventions
-        SET {assignments}
-        WHERE intervention_id = %s
+    inserted = conn.execute(
+        """
+        INSERT INTO care_interventions (encounter_id, status, assigned_to, notes)
+        VALUES (%s, %s, %s, %s)
         RETURNING intervention_id, encounter_id, status, assigned_to, notes,
                   created_at, updated_at
         """,
-        (*values, current["intervention_id"]),
+        (
+            encounter_id,
+            new_values["status"],
+            new_values["assigned_to"],
+            new_values["notes"],
+        ),
     )
-    return updated.fetchone()
+    return inserted.fetchone()
 
 
 def get_latest_intervention_status_counts(conn: psycopg.Connection) -> dict[str, int]:

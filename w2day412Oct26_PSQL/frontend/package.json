@@ -4,6 +4,9 @@
   "type": "module",
   "scripts": {
     "encounter": "tsx encounter.ts",
+    "create-encounter": "tsx create-encounter.ts",
+    "search-patients": "tsx search-patients.ts",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

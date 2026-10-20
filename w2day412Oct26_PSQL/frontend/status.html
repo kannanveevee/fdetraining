@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Status Tracking</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+    <div id="app-container">
+        <header id="app-header">
+            Diabetes Patient Management
+            <nav>
+                <a href="search.html">Search Patient</a>
+                <a href="index.html">Add Encounter</a>
+            </nav>
+        </header>
+
+        <section>
+            <h2>Intervention Status Tracking</h2>
+
+            <form id="status-form" class="panel">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="encounter-id">Encounter Id</label>
+                        <input type="number" id="encounter-id" min="1" step="1" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="patient-number">Patient Number</label>
+                        <input type="text" id="patient-number" readonly>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="status">Status</label>
+                        <select id="status" required>
+                            <option value="open">open</option>
+                            <option value="in_progress">in_progress</option>
+                            <option value="completed">completed</option>
+                            <option value="cancelled">cancelled</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="assigned-to">Assigned To</label>
+                        <input type="text" id="assigned-to" maxlength="200">
+                    </div>
+
+                    <div class="form-group wide">
+                        <label for="notes">Notes</label>
+                        <textarea id="notes" maxlength="4000"></textarea>
+                    </div>
+                </div>
+
+                <p id="encounter-info" class="message"></p>
+
+                <div class="form-actions">
+                    <button type="submit" id="update-btn" disabled>Update</button>
+                </div>
+            </form>
+
+            <p id="status-message" class="message" role="status"></p>
+
+            <h2>Updates (newest first)</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Intervention ID</th>
+                            <th>Status</th>
+                            <th>Assigned To</th>
+                            <th>Notes</th>
+                            <th>Saved At</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history"></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <!-- dist/api.js is built from api.ts: run "npm run build" in this folder first.
+         Open from the search page, or http://127.0.0.1:5500/status.html?encounter_id=... -->
+    <script type="module">
+        import { getEncounter, getInterventionHistory, updateIntervention } from "./dist/api.js";
+
+        const form = document.getElementById("status-form");
+        const encounterInput = document.getElementById("encounter-id");
+        const patientInput = document.getElementById("patient-number");
+        const statusSelect = document.getElementById("status");
+        const assignedInput = document.getElementById("assigned-to");
+        const notesInput = document.getElementById("notes");
+        const updateButton = document.getElementById("update-btn");
+        const encounterInfo = document.getElementById("encounter-info");
+        const message = document.getElementById("status-message");
+        const historyBody = document.getElementById("history");
+
+        // The encounter currently shown; null until one is loaded.
+        let loadedEncounterId = null;
+
+        function showMessage(text, kind) {
+            message.textContent = text;
+            message.className = `message ${kind}`;
+        }
+
+        function errorText(error) {
+            return error.message === "Failed to fetch"
+                ? "Could not reach the API at http://127.0.0.1:8000. Is uvicorn running?"
+                : error.message;
+        }
+
+        // textContent is used (not innerHTML), so values are shown as plain text.
+        function showHistory(history) {
+            historyBody.replaceChildren();
+            if (history.length === 0) {
+                const cell = historyBody.insertRow().insertCell();
+                cell.colSpan = 5;
+                cell.className = "empty";
+                cell.textContent = "No updates yet. The first Update creates one.";
+                return;
+            }
+            for (const item of history) {
+                const row = historyBody.insertRow();
+                row.insertCell().textContent = item.intervention_id;
+                row.insertCell().textContent = item.status;
+                row.insertCell().textContent = item.assigned_to ?? "";
+                const notes = row.insertCell();
+                notes.className = "notes";
+                notes.textContent = item.notes ?? "";
+                row.insertCell().textContent = new Date(item.created_at).toLocaleString();
+            }
+        }
+
+        // The form starts from the latest update, or "open" when there is none.
+        function fillForm(latest) {
+            statusSelect.value = latest?.status ?? "open";
+            assignedInput.value = latest?.assigned_to ?? "";
+            notesInput.value = latest?.notes ?? "";
+        }
+
+        function clearEncounter(text) {
+            loadedEncounterId = null;
+            updateButton.disabled = true;
+            patientInput.value = "";
+            encounterInfo.textContent = "";
+            historyBody.replaceChildren();
+            fillForm(null);
+            showMessage(text, "error");
+        }
+
+        // GET /encounters/{id} for the patient number and risk, and
+        // GET /interventions/{id} for the list of updates.
+        async function loadEncounter(encounterId) {
+            showMessage("Loading...", "");
+            updateButton.disabled = true;
+            try {
+                const [encounter, history] = await Promise.all([
+                    getEncounter(encounterId),
+                    getInterventionHistory(encounterId),
+                ]);
+                if (encounter === null || history === null) {
+                    clearEncounter(`Encounter ${encounterId} not found.`);
+                    return;
+                }
+
+                loadedEncounterId = encounterId;
+                patientInput.value = encounter.patient_nbr ?? "";
+                encounterInfo.textContent =
+                    `Risk: ${encounter.risk_level} (score ${encounter.risk_score}), age ${encounter.age ?? "unknown"}`;
+                fillForm(history[0]);
+                showHistory(history);
+                updateButton.disabled = false;
+                showMessage("", "");
+                // Keep the address in step with the shown encounter (window.history,
+                // because the local `history` above is the list of updates).
+                window.history.replaceState(null, "", `?encounter_id=${encounterId}`);
+            } catch (error) {
+                console.error(error);
+                clearEncounter(errorText(error));
+            }
+        }
+
+        // Typing another Encounter Id and leaving the field loads that encounter.
+        encounterInput.addEventListener("change", () => {
+            const encounterId = Number(encounterInput.value);
+            if (Number.isInteger(encounterId) && encounterId > 0) {
+                loadEncounter(encounterId);
+            } else {
+                clearEncounter("Enter a whole Encounter Id.");
+            }
+        });
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();   // stop the browser from reloading the page
+            if (loadedEncounterId === null) {
+                return;
+            }
+            updateButton.disabled = true;
+            showMessage("Saving...", "");
+            try {
+                // An empty Assigned To / Notes box is saved as "no value" (null).
+                const saved = await updateIntervention(loadedEncounterId, {
+                    status: statusSelect.value,
+                    assigned_to: assignedInput.value.trim() || null,
+                    notes: notesInput.value.trim() || null,
+                });
+
+                // Read the list back from the database, so it shows what is stored.
+                const history = await getInterventionHistory(loadedEncounterId);
+                showHistory(history ?? []);
+                fillForm(history?.[0]);
+                showMessage(
+                    `Saved update ${saved.intervention_id}: status ${saved.status}.`,
+                    "success"
+                );
+            } catch (error) {
+                console.error(error);
+                showMessage(errorText(error), "error");
+            } finally {
+                updateButton.disabled = loadedEncounterId === null;
+            }
+        });
+
+        // Opened from the search page: status.html?encounter_id=123
+        const fromUrl = new URLSearchParams(location.search).get("encounter_id");
+        if (fromUrl !== null) {
+            encounterInput.value = fromUrl;
+            encounterInput.dispatchEvent(new Event("change"));
+        } else {
+            showMessage("Enter an Encounter Id, or open one from the search page.", "");
+        }
+    </script>
+
+</body>
+</html>

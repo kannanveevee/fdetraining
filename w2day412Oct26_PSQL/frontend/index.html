@@ -58,6 +58,18 @@
             transition: border-color 0.2s, box-shadow 0.2s;
         }
 
+        /* Hide the up/down arrows of number inputs; values are typed in. */
+        .form-group input[type="number"]::-webkit-outer-spin-button,
+        .form-group input[type="number"]::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        .form-group input[type="number"] {
+            -moz-appearance: textfield;   /* Firefox */
+            appearance: textfield;
+        }
+
         .form-group select {
             max-width: 160px;
             cursor: pointer;
@@ -99,6 +111,58 @@
 
         #add-btn:active {
             background-color: #2c5689;
+        }
+
+        #add-btn:disabled {
+            opacity: 0.6;
+            cursor: wait;
+        }
+
+        #form-message {
+            margin: 0 30px 16px;
+            min-height: 20px;
+            font-size: 15px;
+        }
+
+        #form-message.success {
+            color: #1d7a3a;
+        }
+
+        #form-message.error {
+            color: #b3261e;
+        }
+
+        #saved-section {
+            padding: 0 30px 24px;
+        }
+
+        #saved-title {
+            margin: 0 0 12px;
+            color: #3a6fb0;
+            font-size: 18px;
+            font-weight: normal;
+        }
+
+        .table-wrap {
+            overflow-x: auto;
+        }
+
+        #encounter-table {
+            border-collapse: collapse;
+            background-color: #ffffff;
+            font-size: 14px;
+        }
+
+        #encounter-table th,
+        #encounter-table td {
+            border: 1px solid #999999;
+            padding: 6px 10px;
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        #encounter-table th {
+            background-color: #b9d9f5;
         }
     </style>
 </head>
@@ -156,40 +220,116 @@
                 <button type="submit" id="add-btn">Add Encounter</button>
             </div>
         </form>
+
+        <p id="form-message" role="status"></p>
+
+        <section id="saved-section">
+            <h2 id="saved-title">Saved Encounters (read back with GET /encounters/{id})</h2>
+            <div class="table-wrap">
+                <table id="encounter-table">
+                    <thead>
+                        <tr>
+                            <th>Encounter ID</th>
+                            <th>Patient Number</th>
+                            <th>Age</th>
+                            <th>Days in Hospital</th>
+                            <th>Inpatient</th>
+                            <th>Emergency</th>
+                            <th>Medications</th>
+                            <th>Risk Score</th>
+                            <th>Risk Level</th>
+                        </tr>
+                    </thead>
+                    <tbody id="encounter-list"></tbody>
+                </table>
+            </div>
+        </section>
     </div>
 
-    <!-- JavaScript Execution -->
-    <script>
-        async function loadPatients() {
-            try {
-                const response = await fetch("http://127.0.0.1:8000/encounters");
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                const patients = await response.json();
-                console.log(patients);
+    <!-- JavaScript Execution.
+         dist/api.js is built from api.ts: run "npm run build" in this folder first.
+         Serve this folder with "python -m http.server 5500" and open http://127.0.0.1:5500
+         (a module script does not load from file://, and CORS only allows port 5500). -->
+    <script type="module">
+        import { createEncounter, getEncounter } from "./dist/api.js";
 
+        const form = document.getElementById("encounter-form");
+        const addButton = document.getElementById("add-btn");
+        const message = document.getElementById("form-message");
+        const encounterList = document.getElementById("encounter-list");
 
-                // Populate patient rows dynamically
-                document.getElementById('encounter-list').innerHTML = patients.map(patient => `
-                    <tr>
-                        <td>${patient.patient_nbr}</td>
-                        <td>${patient.age}</td>
-                        <td>${patient.risk_score}</td>
-                        <td>${patient.risk_level}</td>
-                    </tr>
-                `).join('');
-
-
-            } catch (error) {
-                console.error("Error loading patient data:", error);
-            }
+        function showMessage(text, kind) {
+            message.textContent = text;
+            message.className = kind;
         }
 
+        // Read the form into the body that POST /encounters expects.
+        function readForm() {
+            const number = (id) => Number(document.getElementById(id).value);
+            return {
+                patient_nbr: number("patient-number"),
+                age: document.getElementById("age-group").value,
+                time_in_hospital: number("time-in-hospital"),
+                number_inpatient: number("inpatient-visits"),
+                number_emergency: number("emergency-visits"),
+                num_medications: number("medications"),
+            };
+        }
 
-        // Load the page with the patient encounters when the DOM is fully loaded
-        window.addEventListener('DOMContentLoaded', (event) => {
-            loadPatients();
+        // Add one encounter as the top row of the table.
+        // textContent is used (not innerHTML), so values are shown as plain text.
+        function addRow(encounter) {
+            const row = document.createElement("tr");
+            const values = [
+                encounter.encounter_id,
+                encounter.patient_nbr,
+                encounter.age,
+                encounter.time_in_hospital,
+                encounter.number_inpatient,
+                encounter.number_emergency,
+                encounter.num_medications,
+                encounter.risk_score,
+                encounter.risk_level,
+            ];
+            for (const value of values) {
+                const cell = document.createElement("td");
+                cell.textContent = value ?? "";
+                row.appendChild(cell);
+            }
+            encounterList.prepend(row);
+        }
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();   // stop the browser from reloading the page
+            addButton.disabled = true;
+            showMessage("Saving...", "");
+
+            try {
+                // 1. POST /encounters saves the encounter in PostgreSQL.
+                const created = await createEncounter(readForm());
+
+                // 2. GET /encounters/{id} reads it back, so the table shows what is stored.
+                const saved = await getEncounter(created.encounter_id);
+                if (saved === null) {
+                    throw new Error(`Encounter ${created.encounter_id} was not found after saving.`);
+                }
+
+                addRow(saved);
+                console.log("POST response:", created, "GET response:", saved);
+                showMessage(
+                    `Encounter ${saved.encounter_id} saved. Risk: ${saved.risk_level} (score ${saved.risk_score}).`,
+                    "success"
+                );
+                form.reset();
+            } catch (error) {
+                console.error(error);
+                const text = error.message === "Failed to fetch"
+                    ? "Could not reach the API at http://127.0.0.1:8000. Is uvicorn running?"
+                    : error.message;
+                showMessage(text, "error");
+            } finally {
+                addButton.disabled = false;
+            }
         });
     </script>
 

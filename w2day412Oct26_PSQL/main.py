@@ -18,21 +18,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import get_connection
 from models import (
     Encounter,
+    EncounterCreate,
     Intervention,
     InterventionUpdate,
     ManagementDashboard,
     OperationsSummary,
+    PatientSearchResult,
     QueueItem,
     ReadmissionAnalysis,
     RiskLevel,
 )
 from service import (
+    create_encounter,
     get_encounter,
+    intervention_history,
     list_care_queue,
     list_encounters,
     management_dashboard,
     operations_summary,
     readmission_analysis,
+    search_patients,
     update_intervention,
 )
 
@@ -49,11 +54,14 @@ app = FastAPI(
 # get_connection() and closes it when the request is finished.
 Connection = Annotated[psycopg.Connection, Depends(get_connection)]
 
-app.add_middleware (
+# CORS: the browser only lets frontend/index.html read API responses when the
+# page's origin is listed here. Serve the page on port 5500, from frontend/:
+#   python -m http.server 5500     then open http://127.0.0.1:5500
+app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["http://127.0.0.1:5500", "http://localhost:5500"],
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["Content-Type"],
 )
 
 
@@ -68,12 +76,45 @@ def encounters(
     return list_encounters(conn, limit=limit, offset=offset)
 
 
+@app.post("/encounters", response_model=Encounter, status_code=201)
+def post_encounter(new_encounter: EncounterCreate, conn: Connection) -> dict[str, object]:
+    # 201 Created; the response is the saved encounter with its new id and risk score.
+    return create_encounter(conn, new_encounter.model_dump())
+
+
 @app.get("/encounters/{encounter_id}", response_model=Encounter)
 def encounter(encounter_id: int, conn: Connection) -> dict[str, object]:
     result = get_encounter(conn, encounter_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Encounter not found.")
     return result
+
+
+# ---------- Patient search ----------
+
+@app.get("/patients/search", response_model=PatientSearchResult)
+def patient_search(
+    conn: Connection,
+    patient_nbr: Annotated[int | None, Query(ge=1)] = None,
+    risk_level: RiskLevel | None = None,
+    risk_score: Annotated[int | None, Query(ge=0, le=8)] = None,   # exact score
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, object]:
+    # All filters are optional, but at least one is needed (the table has ~100k rows).
+    if patient_nbr is None and risk_level is None and risk_score is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least one of patient_nbr, risk_level or risk_score.",
+        )
+    return search_patients(
+        conn,
+        patient_nbr=patient_nbr,
+        risk_level=risk_level,
+        risk_score=risk_score,
+        limit=limit,
+        offset=offset,
+    )
 
 
 # ---------- Care queue ----------
@@ -108,12 +149,21 @@ def high_risk_care_queue(
 
 # ---------- Interventions ----------
 
+@app.get("/interventions/{encounter_id}", response_model=list[Intervention])
+def interventions(encounter_id: int, conn: Connection) -> list[dict[str, object]]:
+    # Every status update of the encounter, newest first. [] if it has none yet.
+    history = intervention_history(conn, encounter_id)
+    if history is None:
+        raise HTTPException(status_code=404, detail="Encounter not found.")
+    return history
+
+
 @app.patch("/interventions/{encounter_id}", response_model=Intervention)
 def patch_intervention(
     encounter_id: int, update: InterventionUpdate, conn: Connection
 ) -> dict[str, object]:
-    # exclude_unset: pass on only the fields the caller really sent,
-    # so anything they left out keeps its old value.
+    # Each PATCH adds a new intervention row (the history). exclude_unset: pass on
+    # only the fields the caller really sent, so anything left out keeps its old value.
     intervention = update_intervention(
         conn, encounter_id, update.model_dump(mode="json", exclude_unset=True)
     )

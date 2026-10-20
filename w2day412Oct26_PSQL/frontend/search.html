@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patient Search</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+    <div id="app-container">
+        <header id="app-header">
+            Diabetes Patient Management
+            <nav>
+                <a href="search.html">Search Patient</a>
+                <a href="index.html">Add Encounter</a>
+            </nav>
+        </header>
+
+        <!-- a) Search by Patient Number and/or Risk Level and/or Risk Score -->
+        <section>
+            <h2>Search Patient</h2>
+
+            <form id="search-form" class="panel">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="patient-number">Patient Number</label>
+                        <input type="number" id="patient-number" min="1" step="1">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="risk-level">Risk Level</label>
+                        <select id="risk-level">
+                            <option value="">Any</option>
+                            <option value="LOW">LOW</option>
+                            <option value="MEDIUM">MEDIUM</option>
+                            <option value="HIGH">HIGH</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="risk-score">Risk Score (0 - 8)</label>
+                        <input type="number" id="risk-score" min="0" max="8" step="1">
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" id="search-btn">Search &gt;</button>
+                </div>
+            </form>
+
+            <p id="search-message" class="message" role="status"></p>
+
+            <div class="table-wrap">
+                <table>
+                    <thead id="search-head"></thead>
+                    <tbody id="search-results"></tbody>
+                </table>
+            </div>
+
+            <div class="pager">
+                <button type="button" id="search-prev" disabled>&lt; Prev</button>
+                <span id="search-page"></span>
+                <button type="button" id="search-next" disabled>Next &gt;</button>
+            </div>
+        </section>
+
+        <!-- b) High-risk care queue with the latest intervention status -->
+        <section>
+            <h2>High-Risk Patients (Care Queue)</h2>
+
+            <div class="form-actions" style="text-align: left; margin-bottom: 12px;">
+                <button type="button" id="high-btn">Load High-Risk Patients</button>
+            </div>
+
+            <p id="high-message" class="message" role="status"></p>
+
+            <div class="table-wrap">
+                <table>
+                    <thead id="high-head"></thead>
+                    <tbody id="high-results"></tbody>
+                </table>
+            </div>
+
+            <div class="pager">
+                <button type="button" id="high-prev" disabled>&lt; Prev</button>
+                <span id="high-page"></span>
+                <button type="button" id="high-next" disabled>Next &gt;</button>
+            </div>
+        </section>
+    </div>
+
+    <!-- dist/api.js is built from api.ts: run "npm run build" in this folder first.
+         Serve this folder with "python -m http.server 5500" and open
+         http://127.0.0.1:5500/search.html (CORS only allows port 5500). -->
+    <script type="module">
+        import { getHighRiskQueue, searchPatients } from "./dist/api.js";
+
+        const PAGE_SIZE = 25;
+
+        // Table columns: [header, how to read the value from one encounter].
+        const COLUMNS = [
+            ["Encounter ID", (item) => item.encounter_id],
+            ["Patient Number", (item) => item.patient_nbr],
+            ["Age", (item) => item.age],
+            ["Days in Hospital", (item) => item.time_in_hospital],
+            ["Inpatient", (item) => item.number_inpatient],
+            ["Emergency", (item) => item.number_emergency],
+            ["Outpatient", (item) => item.number_outpatient],
+            ["Medications", (item) => item.num_medications],
+            ["Risk Score", (item) => item.risk_score],
+            ["Risk Level", (item) => item.risk_level],
+            ["Intervention Status", (item) => item.intervention_status ?? "none"],
+            ["Assigned To", (item) => item.assigned_to],
+        ];
+
+        // Builds one results table (header, rows, Prev/Next) from element ids.
+        function resultsTable(prefix) {
+            const element = (name) => document.getElementById(`${prefix}-${name}`);
+            const body = element("results");
+            const message = element("message");
+            const prev = element("prev");
+            const next = element("next");
+            const page = element("page");
+
+            const headRow = element("head").insertRow();
+            for (const [header] of COLUMNS) {
+                const th = document.createElement("th");
+                th.textContent = header;
+                headRow.appendChild(th);
+            }
+
+            function showMessage(text, kind) {
+                message.textContent = text;
+                message.className = `message ${kind}`;
+            }
+
+            function showEmpty(text) {
+                body.replaceChildren();
+                const cell = body.insertRow().insertCell();
+                cell.colSpan = COLUMNS.length;
+                cell.className = "empty";
+                cell.textContent = text;
+            }
+
+            // One row per encounter. The Encounter ID links to the status screen.
+            // textContent is used (not innerHTML), so values are shown as plain text.
+            function showRows(items) {
+                if (items.length === 0) {
+                    showEmpty("No encounters found.");
+                    return;
+                }
+                body.replaceChildren();
+                for (const item of items) {
+                    const row = body.insertRow();
+                    for (const [header, read] of COLUMNS) {
+                        const cell = row.insertCell();
+                        if (header === "Encounter ID") {
+                            const link = document.createElement("a");
+                            link.href = `status.html?encounter_id=${encodeURIComponent(item.encounter_id)}`;
+                            link.textContent = item.encounter_id;
+                            cell.appendChild(link);
+                        } else {
+                            cell.textContent = read(item) ?? "";
+                        }
+                    }
+                }
+            }
+
+            // Shows the Prev/Next buttons. goTo(offset) loads that page.
+            function showPager(offset, shown, hasMore, total, goTo) {
+                const first = shown === 0 ? 0 : offset + 1;
+                const last = offset + shown;
+                page.textContent = total === undefined
+                    ? `${first} - ${last}`
+                    : `${first} - ${last} of ${total}`;
+                prev.disabled = offset === 0;
+                next.disabled = !hasMore;
+                prev.onclick = () => goTo(Math.max(0, offset - PAGE_SIZE));
+                next.onclick = () => goTo(offset + PAGE_SIZE);
+            }
+
+            function disablePager() {
+                prev.disabled = true;
+                next.disabled = true;
+            }
+
+            return { showMessage, showEmpty, showRows, showPager, disablePager };
+        }
+
+        function errorText(error) {
+            return error.message === "Failed to fetch"
+                ? "Could not reach the API at http://127.0.0.1:8000. Is uvicorn running?"
+                : error.message;
+        }
+
+        // ---------- a) Search Patient ----------
+
+        const searchForm = document.getElementById("search-form");
+        const searchButton = document.getElementById("search-btn");
+        const searchTable = resultsTable("search");
+        searchTable.showEmpty("Enter at least one filter and press Search.");
+
+        // The filters of the last search, reused by Prev / Next.
+        let currentSearch = null;
+
+        // Read the form into the GET /patients/search filters. Empty fields are left out.
+        function readSearchForm() {
+            const patientNumber = document.getElementById("patient-number").value;
+            const riskLevel = document.getElementById("risk-level").value;
+            const riskScore = document.getElementById("risk-score").value;
+            return {
+                patient_nbr: patientNumber === "" ? undefined : Number(patientNumber),
+                risk_level: riskLevel === "" ? undefined : riskLevel,
+                risk_score: riskScore === "" ? undefined : Number(riskScore),
+            };
+        }
+
+        async function runSearch(offset) {
+            searchButton.disabled = true;
+            searchTable.disablePager();
+            searchTable.showMessage("Searching...", "");
+            try {
+                const result = await searchPatients({ ...currentSearch, limit: PAGE_SIZE, offset });
+                searchTable.showRows(result.items);
+                const hasMore = offset + result.items.length < result.total;
+                searchTable.showPager(offset, result.items.length, hasMore, result.total, runSearch);
+                searchTable.showMessage(`${result.total} matching encounter(s).`, "success");
+            } catch (error) {
+                console.error(error);
+                searchTable.showMessage(errorText(error), "error");
+            } finally {
+                searchButton.disabled = false;
+            }
+        }
+
+        searchForm.addEventListener("submit", (event) => {
+            event.preventDefault();   // stop the browser from reloading the page
+            const search = readSearchForm();
+            if (Object.values(search).every((value) => value === undefined)) {
+                searchTable.showMessage("Enter a Patient Number, Risk Level or Risk Score.", "error");
+                return;
+            }
+            currentSearch = search;
+            runSearch(0);
+        });
+
+        // ---------- b) High-risk patients ----------
+
+        const highButton = document.getElementById("high-btn");
+        const highTable = resultsTable("high");
+        highTable.showEmpty("Press Load High-Risk Patients.");
+
+        async function loadHighRisk(offset) {
+            highButton.disabled = true;
+            highTable.disablePager();
+            highTable.showMessage("Loading...", "");
+            try {
+                // /care-queue/high has no total, so ask for one extra row:
+                // if it comes back, there is a next page.
+                const queue = await getHighRiskQueue(PAGE_SIZE + 1, offset);
+                const hasMore = queue.length > PAGE_SIZE;
+                const items = queue.slice(0, PAGE_SIZE);
+                highTable.showRows(items);
+                highTable.showPager(offset, items.length, hasMore, undefined, loadHighRisk);
+                highTable.showMessage("HIGH risk encounters, highest score first.", "success");
+            } catch (error) {
+                console.error(error);
+                highTable.showMessage(errorText(error), "error");
+            } finally {
+                highButton.disabled = false;
+            }
+        }
+
+        highButton.addEventListener("click", () => loadHighRisk(0));
+    </script>
+
+</body>
+</html>

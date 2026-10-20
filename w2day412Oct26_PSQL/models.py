@@ -41,11 +41,34 @@ class Encounter(BaseModel):
     risk_level: RiskLevel
 
 
+# Body of POST /encounters. encounter_id is not sent: the API assigns the next one.
+# readmitted is not accepted, because a new encounter's outcome is not known yet.
+class EncounterCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")   # unknown fields are rejected
+
+    patient_nbr: int = Field(ge=1)
+    age: str = Field(pattern=r"^\[\d{1,2}-\d{2,3}\)$")   # age band, e.g. "[80-90)"
+    time_in_hospital: int = Field(ge=0)
+    number_inpatient: int = Field(ge=0)
+    number_emergency: int = Field(ge=0)
+    num_medications: int = Field(ge=0)
+    number_outpatient: int | None = Field(default=None, ge=0)
+    num_lab_procedures: int | None = Field(default=None, ge=0)
+    discharge_disposition_id: int | None = None
+    admission_type_id: int | None = None
+
+
 # An encounter in the care queue: the same fields plus its latest intervention.
 class QueueItem(Encounter):
     intervention_status: InterventionStatus | None = None
     assigned_to: str | None = None
     notes: str | None = None
+
+
+# Response of GET /patients/search: how many encounters matched, and one page of them.
+class PatientSearchResult(BaseModel):
+    total: int
+    items: list[QueueItem]
 
 
 # Body of PATCH /interventions/{encounter_id}. Send only what you want to change.

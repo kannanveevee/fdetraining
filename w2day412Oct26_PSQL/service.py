@@ -86,6 +86,18 @@ def get_encounter(
     return score_encounter(row)
 
 
+def create_encounter(
+    conn: psycopg.Connection, encounter: Mapping[str, object]
+) -> dict[str, object]:
+    """Save a new encounter and return it with its risk score.
+
+    The score is calculated from the saved row (not stored), the same way as for
+    GET /encounters, so a new encounter shows the same score in every route.
+    """
+    row = repository.insert_encounter(conn, encounter)
+    return score_encounter(row)
+
+
 def list_care_queue(
     conn: psycopg.Connection,
     *,
@@ -113,13 +125,49 @@ def list_care_queue(
     return queue[offset : offset + limit]
 
 
+def search_patients(
+    conn: psycopg.Connection,
+    *,
+    patient_nbr: int | None = None,
+    risk_level: RiskLevel | None = None,
+    risk_score: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, object]:
+    """Encounters matching every filter that was given (AND), in encounter_id order.
+
+    patient_nbr is filtered in SQL; risk_score (exact) and risk_level are filtered
+    here because the score is calculated in Python. Returns the total number of
+    matches and one page (limit/offset) of them.
+    """
+    matches = []
+    for row in repository.search_encounters(conn, patient_nbr=patient_nbr):
+        scored = score_encounter(row)
+        if risk_score is not None and scored["risk_score"] != risk_score:
+            continue
+        if risk_level is not None and scored["risk_level"] != risk_level.value:
+            continue
+        matches.append(scored)
+
+    return {"total": len(matches), "items": matches[offset : offset + limit]}
+
+
 def update_intervention(
     conn: psycopg.Connection,
     encounter_id: int,
     changes: Mapping[str, object],
 ) -> dict[str, object] | None:
-    """Create or update an intervention. None means the encounter does not exist."""
+    """Record an intervention update. None means the encounter does not exist."""
     return repository.update_intervention(conn, encounter_id, changes)
+
+
+def intervention_history(
+    conn: psycopg.Connection, encounter_id: int
+) -> list[dict[str, object]] | None:
+    """All interventions of an encounter, newest first. None if the encounter does not exist."""
+    if not repository.encounter_exists(conn, encounter_id):
+        return None
+    return repository.get_intervention_history(conn, encounter_id)
 
 
 # =====================================================================
