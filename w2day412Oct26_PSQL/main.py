@@ -14,7 +14,7 @@ from typing import Annotated
 
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Query
-
+from fastapi.middleware.cors import CORSMiddleware
 from database import get_connection
 from models import (
     Encounter,
@@ -48,6 +48,13 @@ app = FastAPI(
 # Short name for "a database connection". FastAPI opens one per request through
 # get_connection() and closes it when the request is finished.
 Connection = Annotated[psycopg.Connection, Depends(get_connection)]
+
+app.add_middleware (
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------- Encounters ----------
